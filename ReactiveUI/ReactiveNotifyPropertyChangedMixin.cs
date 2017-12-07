@@ -138,18 +138,120 @@ namespace ReactiveUI
 
         static IObservable<IObservedChange<object, object>> nestedObservedChanges(Expression expression, IObservedChange<object, object> sourceChange, bool beforeChange)
         {
-            // Make sure a change at a root node propogates events down
-            var kicker = observedChangeFor(expression, sourceChange);
+            // NOTE: there is a window between calling observedChangeFor() and doing the property subscription
+            // where we can miss changes and end up with a broken behavior.
+            // Mitigate this by using a custom .StartWith() that will first subscribe to the source and only then 
+            // it will gather the current initial value - and it will pass it to the subscriber 
+            // only if the source hasn't already produced values (because if it has, the initial value might be stale).
+            // This should cover all race conditions.
 
             // Handle null values in the chain
             if (sourceChange.Value == null) {
+                // Make sure a change at a root node propogates events down
+                var kicker = observedChangeFor(expression, sourceChange);
                 return Observable.Return(kicker);
             }
 
             // Handle non null values in the chain
             return notifyForProperty(sourceChange.Value, expression, beforeChange)
                 .Select(x => new ObservedChange<object, object>(x.Sender, expression, x.GetValue()))
-                .StartWith(kicker);
+                .StartWithCustom(() => observedChangeFor(expression, sourceChange));
+        }
+
+        private static IObservable<T> StartWithCustom<T>(this IObservable<T> source, Func<T> starter)
+        {
+            return new StartWithCustomImpl<T>(source, starter);
+        }
+
+        private class StartWithCustomImpl<T> : IObservable<T>
+        {
+            private readonly IObservable<T> source;
+            private readonly Func<T> starter;
+
+            public StartWithCustomImpl(IObservable<T> source, Func<T> starter)
+            {
+                this.source = source;
+                this.starter = starter;
+            }
+
+            public IDisposable Subscribe(IObserver<T> observer)
+            {
+                var wrapper = new WrappingObserver(observer);
+                var subscription = source.Subscribe(wrapper);
+
+                wrapper.OnInitialValue(starter);
+
+                return subscription;
+            }
+
+            private class WrappingObserver : IObserver<T>
+            {
+                private readonly IObserver<T> original;
+                private object _lock = new object();
+
+                public WrappingObserver(IObserver<T> original)
+                {
+                    this.original = original;
+                }
+
+                public void OnCompleted()
+                {
+                    original.OnCompleted();
+                }
+
+                public void OnError(Exception error)
+                {
+                    original.OnError(error);
+                }
+
+                public void OnNext(T value)
+                {
+                    var l = _lock;
+                    if (l == null)
+                    {
+                        original.OnNext(value);
+                    }
+                    else
+                    {
+                        lock (l)
+                        {
+                            original.OnNext(value);
+                        }
+                    }
+                }
+
+                public void OnInitialValue(Func<T> starter)
+                {
+                    var l = _lock;
+                    if (l != null)
+                    {
+                        T value;
+                        Exception e;
+                        try
+                        {
+                            value = starter();
+                            e = null;
+                        }
+                        catch (Exception ee)
+                        {
+                            value = default(T);
+                            e = ee;
+                        }
+                        lock (l)
+                        {
+                            if (e == null)
+                            {
+                                original.OnNext(value);
+                            }
+                            else
+                            {
+                                original.OnError(e);
+                            }
+                        }
+                        _lock = null;
+                    }
+                }
+            }
         }
 
         static readonly MemoizingMRUCache<Tuple<Type, string, bool>, ICreatesObservableForProperty> notifyFactoryCache =

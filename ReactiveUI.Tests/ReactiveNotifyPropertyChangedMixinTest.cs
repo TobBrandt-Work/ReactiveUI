@@ -115,6 +115,81 @@ namespace ReactiveUI.Tests
     public class ReactiveNotifyPropertyChangedMixinTest
     {
         [Fact]
+        public void OPFPDoesNotMissEvents()
+        {
+            var obj = new Object1();
+
+            obj.X = "A";
+            var th1 = new Thread(() => { Thread.Sleep(1000); obj.X = "B"; }) { IsBackground = true, Name = "B" };
+            th1.Start();
+
+            var subs =
+                obj.WhenAnyValue(x => x.X)
+                   .Select(x => x + x)
+                   .Subscribe(x => { obj.Y = x; });
+
+            th1.Join();
+
+            try
+            {
+                Assert.Equal("B", obj.X);
+                Assert.Equal("BB", obj.Y);
+            }
+            finally
+            {
+                subs.Dispose();
+            }
+        }
+
+        private class Object1 : INotifyPropertyChanged
+        {
+            private string _x;
+            public string X
+            {
+                get
+                {
+                    var toReturn = _x;
+                    Thread.Sleep(2000);
+                    return toReturn;
+                }
+                set
+                {
+                    if (_x != value)
+                    {
+                        _x = value;
+                        OnPropertyChanged("X");
+                    }
+                }
+            }
+
+            private string _y;
+            public string Y
+            {
+                get { return _y; }
+                set
+                {
+                    if (_y != value)
+                    {
+                        _y = value;
+                        OnPropertyChanged("Y");
+                    }
+                }
+            }
+
+            private PropertyChangedEventHandler _propertyChanged;
+            public event PropertyChangedEventHandler PropertyChanged
+            {
+                add { _propertyChanged += value; }
+                remove { _propertyChanged -= value; }
+            }
+
+            protected virtual void OnPropertyChanged(string propertyName)
+            {
+                _propertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            }
+        }
+
+        [Fact]
         public void OFPSimplePropertyTest()
         {
             (new TestScheduler()).With(sched => {
