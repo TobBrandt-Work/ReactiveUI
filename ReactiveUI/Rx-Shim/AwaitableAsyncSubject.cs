@@ -329,9 +329,7 @@ namespace ReactiveUI
                 e.WaitOne();
             }
 
-            if (_exception != null) {
-                throw _exception;
-            }
+            _exception.ThrowIfNotNull();
 
             if (!_hasValue)
                 throw new InvalidOperationException("Sequence has no elements");
